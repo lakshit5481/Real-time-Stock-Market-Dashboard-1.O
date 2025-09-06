@@ -62,4 +62,12 @@ if ticker:
 
             # ---------- SHOW DATA ----------
             st.subheader("📅 Latest Stock Data")
-            st.dataframe(df.tail(), use_container_widt
+            st.dataframe(df.tail(), use_container_width=True)
+
+        except Exception as e:
+            st.error(f"⚠️ Could not render chart due to: {e}")
+
+    else:
+        st.error("❌ No data available for this ticker/period.")
+else:
+    st.info("ℹ️ Enter a ticker symbol to get started.")
