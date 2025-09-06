@@ -9,12 +9,33 @@ st.set_page_config(page_title="📊 Real-Time Stock Market Dashboard", page_icon
 st.title("📊 Real-Time Stock Market Dashboard")
 st.markdown("Track candlesticks, moving averages, volume, and RSI in real time.")
 
-# ---------------- Utils ----------------
+# ---------- Utils ----------
 @st.cache_data(show_spinner=False, ttl=300)
 def load_data(ticker: str, period: str, interval: str = "1d") -> pd.DataFrame:
     df = yf.download(ticker, period=period, interval=interval, auto_adjust=True)
-    if not df.empty:
-        df = df.dropna().copy()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    # Keep only OHLCV; yfinance may add Dividends/Stock Splits which we drop
+    keep_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+    df = df[keep_cols].copy()
+
+    # Ensure datetime index without timezone
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index, errors="coerce")
+    # Drop tz info (mplfinance can be picky)
+    if df.index.tz is not None:
+        df.index = df.index.tz_convert(None)
+
+    # Coerce to numeric dtypes; drop rows that fail
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+
+    # Ensure integer volume if present
+    if "Volume" in df.columns:
+        df["Volume"] = df["Volume"].fillna(0).astype("int64", copy=False)
+
     return df
 
 def compute_rsi_wilder(close: pd.Series, window: int = 14) -> pd.Series:
@@ -22,21 +43,19 @@ def compute_rsi_wilder(close: pd.Series, window: int = 14) -> pd.Series:
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    # Wilder smoothing via EWM; min_periods enforces initial warmup window
     avg_gain = gain.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
 
-    # Handle edge cases without fillna(array)
+    # Edge cases without fillna(array)
     cond_up = (avg_loss == 0) & (avg_gain > 0)
     cond_down = (avg_gain == 0) & (avg_loss > 0)
     rsi = rsi.mask(cond_up, 100.0).mask(cond_down, 0.0)
-
     return rsi
 
-# ---------------- UI ----------------
+# ---------- UI ----------
 col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
     ticker = st.text_input("Enter Stock Ticker", "TSLA").upper()
@@ -47,40 +66,36 @@ with col3:
 
 if ticker:
     df = load_data(ticker, time_period, interval="1d")
-    if df.empty:
-        st.warning("No data returned for the selected ticker/period.")
+    if df.empty or not {"Open","High","Low","Close"}.issubset(df.columns):
+        st.warning("No usable OHLCV data returned for this ticker/period.")
     else:
         # Indicators
-        if len(df) < rsi_window + 1:
-            st.info(f"Not enough data to compute RSI({rsi_window}). Need at least {rsi_window+1} rows, got {len(df)}.")
-            df["RSI"] = np.nan
-        else:
+        if len(df) >= rsi_window + 1:
             df["RSI"] = compute_rsi_wilder(df["Close"], window=rsi_window)
+        else:
+            df["RSI"] = np.nan
+            st.info(f"Not enough data to compute RSI({rsi_window}). Need {rsi_window+1}+ rows, got {len(df)}.")
 
-        # Build additional plots (RSI + guides)
-        apds = []
-        if "RSI" in df:
-            apds.extend([
-                mpf.make_addplot(df["RSI"], panel=1, color="purple", ylabel=f"RSI({rsi_window})"),
-                mpf.make_addplot(pd.Series(70, index=df.index), panel=1, color="red", linestyle="--"),
-                mpf.make_addplot(pd.Series(30, index=df.index), panel=1, color="green", linestyle="--"),
-            ])
+        # Additional plots
+        apds = [
+            mpf.make_addplot(df["RSI"], panel=1, color="purple", ylabel=f"RSI({rsi_window})"),
+            mpf.make_addplot(pd.Series(70, index=df.index), panel=1, color="red", linestyle="--"),
+            mpf.make_addplot(pd.Series(30, index=df.index), panel=1, color="green", linestyle="--"),
+        ]
 
-        # Create and render plot
+        # Let mplfinance manage axes when mixing volume and addplot panels
         fig = mpf.figure(style="yahoo", figsize=(13, 8))
-        ax_main = fig.add_subplot(2, 1, 1)
-        ax_rsi = fig.add_subplot(2, 1, 2, sharex=ax_main)
-
         mpf.plot(
             df,
             type="candle",
             mav=(20, 50),
             volume=True,
             addplot=apds,
-            ax=ax_main,
             panel_ratios=(3, 1),
             warn_too_much_data=10000,
             show_nontrading=False,
+            returnfig=True,
+            fig=fig,
         )
 
         st.pyplot(fig, clear_figure=True)
