@@ -1,11 +1,10 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+import mplfinance as mpf
 
 # ---------- PAGE CONFIG ----------
-st.set_page_config(page_title="📊 Stock Dashboard (Matplotlib)", layout="wide")
+st.set_page_config(page_title="📊 Stock Dashboard (Candlestick)", layout="wide")
 
 # ---------- POPULAR COMPANIES ----------
 POPULAR_COMPANIES = {
@@ -20,8 +19,8 @@ POPULAR_COMPANIES = {
 }
 
 # ---------- UI ----------
-st.title("📊 Stock Market Dashboard (Matplotlib + Seaborn)")
-st.markdown("Track **closing prices, moving averages, and volume** using Matplotlib/Seaborn.")
+st.title("📊 Stock Market Dashboard (Candlestick + Volume)")
+st.markdown("Track **candlestick charts, moving averages, and volume** with `mplfinance`.")
 
 with st.sidebar:
     st.header("🔍 Search Settings")
@@ -30,7 +29,7 @@ with st.sidebar:
 
     time_period = st.selectbox(
         "Time Period",
-        ["5d", "1mo", "3mo", "6mo", "1y", "5y"],
+        ["5d", "1mo", "3mo", "6mo", "1y"],
         index=1
     )
 
@@ -38,33 +37,25 @@ with st.sidebar:
 df = yf.download(ticker, period=time_period, interval="1d")
 
 if not df.empty:
-    df = df.reset_index()
+    # Reset index is NOT needed for mplfinance → it needs DatetimeIndex
+    # Add moving averages (50, 200)
+    addplots = [
+        mpf.make_addplot(df["Close"].rolling(50).mean(), color="blue"),
+        mpf.make_addplot(df["Close"].rolling(200).mean(), color="orange"),
+    ]
 
-    # ---------- MOVING AVERAGES ----------
-    df["MA50"] = df["Close"].rolling(window=50).mean()
-    df["MA200"] = df["Close"].rolling(window=200).mean()
+    # Create candlestick chart
+    fig, axlist = mpf.plot(
+        df,
+        type="candle",
+        style="yahoo",
+        volume=True,
+        addplot=addplots,
+        figsize=(12, 8),
+        returnfig=True
+    )
 
-    # ---------- PRICE & MOVING AVERAGES ----------
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(df["Date"], df["Close"], label="Close Price", color="blue")
-    ax.plot(df["Date"], df["MA50"], label="MA50", color="orange", linestyle="--")
-    ax.plot(df["Date"], df["MA200"], label="MA200", color="green", linestyle="--")
-    ax.set_title(f"{ticker} Closing Price & Moving Averages")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Price (USD)")
-    ax.legend()
     st.pyplot(fig)
-
-    # ---------- VOLUME CHART ----------
-    fig2, ax2 = plt.subplots(figsize=(12, 4))
-    sns.barplot(x=df["Date"], y=df["Volume"], ax=ax2, color="purple")
-    ax2.set_title(f"{ticker} Trading Volume")
-    ax2.set_xlabel("Date")
-    ax2.set_ylabel("Volume")
-    # Rotate x labels for readability
-    for label in ax2.get_xticklabels():
-        label.set_rotation(45)
-    st.pyplot(fig2)
 
     # ---------- DATA TABLE ----------
     st.subheader("📅 Latest Stock Data")
