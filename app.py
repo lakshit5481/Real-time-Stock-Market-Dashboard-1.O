@@ -9,41 +9,65 @@ st.set_page_config(page_title="📊 Real-Time Stock Market Dashboard", page_icon
 st.title("📊 Real-Time Stock Market Dashboard")
 st.markdown("Track candlesticks, moving averages, volume, and RSI in real time.")
 
-ticker = st.text_input("Enter Stock Ticker (e.g., AAPL, TSLA, AMZN)", "TSLA").upper()
-time_period = st.selectbox("Select Time Period", ["5d", "1mo", "3mo", "6mo", "1y", "5y"], index=2)
-
-if ticker:
-    df = yf.download(ticker, period=time_period, interval="1d", auto_adjust=True)
+# ---------------- Utils ----------------
+@st.cache_data(show_spinner=False, ttl=300)
+def load_data(ticker: str, period: str, interval: str = "1d") -> pd.DataFrame:
+    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True)
     if not df.empty:
         df = df.dropna().copy()
+    return df
 
-        # ----- Wilder RSI -----
-        window = 14
-        delta = df["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
+def compute_rsi_wilder(close: pd.Series, window: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-        # Wilder's smoothing via EWM with com=window-1 equals:
-        # avg_t = (avg_{t-1}*(window-1) + current)/window  [Wilder]
-        avg_gain = gain.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
-        avg_loss = loss.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+    # Wilder smoothing via EWM; min_periods enforces initial warmup window
+    avg_gain = gain.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+    avg_loss = loss.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
 
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        rsi = 100 - (100 / (1 + rs))
-        # If avg_loss was exactly zero, RSI should be 100; if avg_gain was zero and loss>0, RSI should be 0
-        rsi = rsi.fillna(np.where((avg_loss == 0) & (avg_gain > 0), 100, np.nan))
-        df["RSI"] = rsi
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
 
-        # ----- Plot with mplfinance -----
-        # Build RSI lower panel
-        apds = [
-            mpf.make_addplot(df["RSI"], panel=1, color="purple", ylabel="RSI(14)"),
-            mpf.make_addplot(pd.Series(70, index=df.index), panel=1, color="red", linestyle="--"),
-            mpf.make_addplot(pd.Series(30, index=df.index), panel=1, color="green", linestyle="--"),
-        ]
+    # Handle edge cases without fillna(array)
+    cond_up = (avg_loss == 0) & (avg_gain > 0)
+    cond_down = (avg_gain == 0) & (avg_loss > 0)
+    rsi = rsi.mask(cond_up, 100.0).mask(cond_down, 0.0)
 
-        # Create mpf figure and plot; use style and MAs on main panel
-        fig = mpf.figure(style="yahoo", figsize=(12, 8))
+    return rsi
+
+# ---------------- UI ----------------
+col1, col2, col3 = st.columns([2, 1, 1])
+with col1:
+    ticker = st.text_input("Enter Stock Ticker", "TSLA").upper()
+with col2:
+    time_period = st.selectbox("Select Time Period", ["5d", "1mo", "3mo", "6mo", "1y", "5y"], index=2)
+with col3:
+    rsi_window = st.number_input("RSI Window", min_value=5, max_value=50, value=14, step=1)
+
+if ticker:
+    df = load_data(ticker, time_period, interval="1d")
+    if df.empty:
+        st.warning("No data returned for the selected ticker/period.")
+    else:
+        # Indicators
+        if len(df) < rsi_window + 1:
+            st.info(f"Not enough data to compute RSI({rsi_window}). Need at least {rsi_window+1} rows, got {len(df)}.")
+            df["RSI"] = np.nan
+        else:
+            df["RSI"] = compute_rsi_wilder(df["Close"], window=rsi_window)
+
+        # Build additional plots (RSI + guides)
+        apds = []
+        if "RSI" in df:
+            apds.extend([
+                mpf.make_addplot(df["RSI"], panel=1, color="purple", ylabel=f"RSI({rsi_window})"),
+                mpf.make_addplot(pd.Series(70, index=df.index), panel=1, color="red", linestyle="--"),
+                mpf.make_addplot(pd.Series(30, index=df.index), panel=1, color="green", linestyle="--"),
+            ])
+
+        # Create and render plot
+        fig = mpf.figure(style="yahoo", figsize=(13, 8))
         ax_main = fig.add_subplot(2, 1, 1)
         ax_rsi = fig.add_subplot(2, 1, 2, sharex=ax_main)
 
@@ -54,12 +78,9 @@ if ticker:
             volume=True,
             addplot=apds,
             ax=ax_main,
-            volume_panel=2,  # mpf will create internal axes; we’re predefining main/RSI
             panel_ratios=(3, 1),
             warn_too_much_data=10000,
             show_nontrading=False,
         )
 
-        st.pyplot(fig)
-    else:
-        st.warning("No data returned for the selected ticker/period.")
+        st.pyplot(fig, clear_figure=True)
