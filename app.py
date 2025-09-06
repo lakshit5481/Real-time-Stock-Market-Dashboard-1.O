@@ -1,73 +1,65 @@
-# app.py
-import streamlit as st
+    import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import mplfinance as mpf
+import matplotlib.pyplot as plt
 
-# -------- STREAMLIT PAGE CONFIG --------
-st.set_page_config(
-    page_title="📊 Real-Time Stock Market Dashboard",
-    page_icon="📈",
-    layout="wide"
-)
-
+st.set_page_config(page_title="📊 Real-Time Stock Market Dashboard", page_icon="📈", layout="wide")
 st.title("📊 Real-Time Stock Market Dashboard")
 st.markdown("Track candlesticks, moving averages, volume, and RSI in real time.")
 
-# -------- SIDEBAR INPUT --------
 ticker = st.text_input("Enter Stock Ticker (e.g., AAPL, TSLA, AMZN)", "TSLA").upper()
 time_period = st.selectbox("Select Time Period", ["5d", "1mo", "3mo", "6mo", "1y", "5y"], index=2)
 
-# -------- FETCH STOCK DATA --------
 if ticker:
     df = yf.download(ticker, period=time_period, interval="1d", auto_adjust=True)
-
     if not df.empty:
-        try:
-            df = df.dropna()
+        df = df.dropna().copy()
 
-            # ---------- RSI CALCULATION ----------
-            delta = df["Close"].diff()
-            gain = np.where(delta > 0, delta, 0)
-            loss = np.where(delta < 0, -delta, 0)
+        # ----- Wilder RSI -----
+        window = 14
+        delta = df["Close"].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
 
-            window = 14
-            avg_gain = pd.Series(gain, index=df.index).rolling(window=window).mean()
-            avg_loss = pd.Series(loss, index=df.index).rolling(window=window).mean()
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
+        # Wilder's smoothing via EWM with com=window-1 equals:
+        # avg_t = (avg_{t-1}*(window-1) + current)/window  [Wilder]
+        avg_gain = gain.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+        avg_loss = loss.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
 
-            df["RSI"] = pd.Series(rsi, index=df.index).astype(float)  # ✅ 1D aligned Series
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        # If avg_loss was exactly zero, RSI should be 100; if avg_gain was zero and loss>0, RSI should be 0
+        rsi = rsi.fillna(np.where((avg_loss == 0) & (avg_gain > 0), 100, np.nan))
+        df["RSI"] = rsi
 
-            # ---------- ADD MOVING AVERAGES + RSI ----------
-            addplots = [
-                mpf.make_addplot(df["Close"].rolling(50).mean(), color="blue", width=1),
-                mpf.make_addplot(df["Close"].rolling(200).mean(), color="orange", width=1),
-                mpf.make_addplot(df["RSI"], panel=1, color="purple", ylabel="RSI")
-            ]
+        # ----- Plot with mplfinance -----
+        # Build RSI lower panel
+        apds = [
+            mpf.make_addplot(df["RSI"], panel=1, color="purple", ylabel="RSI(14)"),
+            mpf.make_addplot(pd.Series(70, index=df.index), panel=1, color="red", linestyle="--"),
+            mpf.make_addplot(pd.Series(30, index=df.index), panel=1, color="green", linestyle="--"),
+        ]
 
-            # ---------- CANDLESTICK CHART ----------
-            fig, axlist = mpf.plot(
-                df,
-                type="candle",
-                style="yahoo",
-                volume=True,
-                addplot=addplots,
-                figsize=(12, 8),
-                returnfig=True
-            )
+        # Create mpf figure and plot; use style and MAs on main panel
+        fig = mpf.figure(style="yahoo", figsize=(12, 8))
+        ax_main = fig.add_subplot(2, 1, 1)
+        ax_rsi = fig.add_subplot(2, 1, 2, sharex=ax_main)
 
-            st.pyplot(fig)
+        mpf.plot(
+            df,
+            type="candle",
+            mav=(20, 50),
+            volume=True,
+            addplot=apds,
+            ax=ax_main,
+            volume_panel=2,  # mpf will create internal axes; we’re predefining main/RSI
+            panel_ratios=(3, 1),
+            warn_too_much_data=10000,
+            show_nontrading=False,
+        )
 
-            # ---------- SHOW DATA ----------
-            st.subheader("📅 Latest Stock Data")
-            st.dataframe(df.tail(), use_container_width=True)
-
-        except Exception as e:
-            st.error(f"⚠️ Could not render chart due to: {e}")
-
+        st.pyplot(fig)
     else:
-        st.error("❌ No data available for this ticker/period.")
-else:
-    st.info("ℹ️ Enter a ticker symbol to get started.")
+        st.warning("No data returned for the selected ticker/period.")
