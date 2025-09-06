@@ -33,12 +33,12 @@ if ticker:
             loss = np.where(delta < 0, -delta, 0)
 
             window = 14
-            avg_gain = pd.Series(gain).rolling(window=window).mean()
-            avg_loss = pd.Series(loss).rolling(window=window).mean()
+            avg_gain = pd.Series(gain, index=df.index).rolling(window=window).mean()
+            avg_loss = pd.Series(loss, index=df.index).rolling(window=window).mean()
             rs = avg_gain / avg_loss
             rsi = 100 - (100 / (1 + rs))
 
-            df["RSI"] = rsi.values.flatten()  # ✅ ensure 1D
+            df["RSI"] = pd.Series(rsi, index=df.index).astype(float)  # ✅ 1D aligned Series
 
             # ---------- ADD MOVING AVERAGES + RSI ----------
             addplots = [
@@ -62,12 +62,4 @@ if ticker:
 
             # ---------- SHOW DATA ----------
             st.subheader("📅 Latest Stock Data")
-            st.dataframe(df.tail(), use_container_width=True)
-
-        except Exception as e:
-            st.error(f"⚠️ Could not render chart due to: {e}")
-
-    else:
-        st.error("❌ No data available for this ticker/period.")
-else:
-    st.info("ℹ️ Enter a ticker symbol to get started.")
+            st.dataframe(df.tail(), use_container_widt
